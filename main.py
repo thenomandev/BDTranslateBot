@@ -1,10 +1,12 @@
 import os
 import logging
+import json
+import urllib.parse
+import urllib.request
 
 from flask import Flask, request
 from telegram import Bot, Update
 from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
-from googletrans import Translator
 
 
 # =========================
@@ -26,34 +28,16 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 
 if not TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN environment variable সেট করা নেই!"
-    )
+    raise RuntimeError("BOT_TOKEN environment variable সেট করা নেই!")
 
 
 # =========================
-# Flask + Telegram Bot
+# Flask + Telegram
 # =========================
 
 bot = Bot(token=TOKEN)
 
 app = Flask(__name__)
-
-
-# =========================
-# Google Translator
-# =========================
-
-translator = Translator(
-    service_urls=[
-        "translate.googleapis.com"
-    ]
-)
-
-
-# =========================
-# Telegram Dispatcher
-# =========================
 
 dispatcher = Dispatcher(
     bot,
@@ -63,17 +47,10 @@ dispatcher = Dispatcher(
 
 
 # =========================
-# Translation Function
+# Translation
 # =========================
 
 def translate_text(text):
-    """
-    Automatically detects the language.
-
-    English -> Bangla
-    Bangla  -> English
-    Other   -> Bangla
-    """
 
     if not text or not text.strip():
         return None
@@ -82,50 +59,125 @@ def translate_text(text):
 
     try:
 
-        # Detect language
-        detected = translator.detect(text)
-
-        lang = detected.lang.lower()
-
-        logger.info(
-            "Detected language: %s | Text: %s",
-            lang,
-            text[:100]
+        # Detect source language
+        detect_url = (
+            "https://translate.googleapis.com/"
+            "translate_a/single?"
+            + urllib.parse.urlencode({
+                "client": "gtx",
+                "sl": "auto",
+                "tl": "en",
+                "dt": "t",
+                "q": text
+            })
         )
 
+        req = urllib.request.Request(
+            detect_url,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
 
-        # English -> Bangla
-        if lang == "en":
+        with urllib.request.urlopen(
+            req,
+            timeout=15
+        ) as response:
 
-            destination = "bn"
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
+
+
+        # Google response-এর detected language
+        detected_lang = None
+
+        if len(data) > 2:
+            detected_lang = data[2]
+
+        if detected_lang:
+            detected_lang = detected_lang.lower()
+
+        logger.info(
+            "Detected language: %s",
+            detected_lang
+        )
 
 
         # Bangla -> English
-        elif lang == "bn":
-
+        if detected_lang == "bn":
             destination = "en"
 
-
-        # Other languages -> Bangla
+        # English -> Bangla
         else:
-
             destination = "bn"
 
 
-        # Translate
-        result = translator.translate(
-            text,
-            dest=destination
+        # =========================
+        # Actual Translation
+        # =========================
+
+        translate_url = (
+            "https://translate.googleapis.com/"
+            "translate_a/single?"
+            + urllib.parse.urlencode({
+                "client": "gtx",
+                "sl": "auto",
+                "tl": destination,
+                "dt": "t",
+                "q": text
+            })
         )
 
-        translated_text = result.text
+        req = urllib.request.Request(
+            translate_url,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
+
+        with urllib.request.urlopen(
+            req,
+            timeout=15
+        ) as response:
+
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
+
+
+        # Translation result
+        translated_parts = []
+
+        if data and data[0]:
+
+            for item in data[0]:
+
+                if item and item[0]:
+
+                    translated_parts.append(
+                        item[0]
+                    )
+
+
+        translated = "".join(
+            translated_parts
+        ).strip()
+
+
+        if not translated:
+            logger.error(
+                "Empty translation response"
+            )
+            return None
+
 
         logger.info(
             "Translation successful: %s",
-            translated_text[:100]
+            translated[:100]
         )
 
-        return translated_text
+        return translated
 
 
     except Exception as e:
@@ -139,18 +191,16 @@ def translate_text(text):
 
 
 # =========================
-# Normal Message Handler
+# Normal Message
 # =========================
 
 def handle_message(update, context):
 
     try:
 
-        # Make sure message exists
         if not update.message:
             return
 
-        # Make sure text exists
         if not update.message.text:
             return
 
@@ -160,23 +210,19 @@ def handle_message(update, context):
             return
 
 
-        # Translate
         translated = translate_text(text)
 
 
-        # Success
         if translated:
 
             update.message.reply_text(
                 f"🔁 {translated}"
             )
 
-
-        # Failed
         else:
 
             update.message.reply_text(
-                "❌ অনুবাদ করা যায়নি।\n"
+                "❌ অনুবাদ ব্যর্থ হয়েছে।\n"
                 "কিছুক্ষণ পরে আবার চেষ্টা করুন।"
             )
 
@@ -197,11 +243,11 @@ def translate_command(update, context):
 
     try:
 
-        # No text after /translate
         if not context.args:
 
             update.message.reply_text(
-                "⚠️ দয়া করে /translate এর পরে কিছু লিখুন।\n\n"
+                "⚠️ দয়া করে /translate এর পরে "
+                "কিছু লিখুন।\n\n"
                 "উদাহরণ:\n"
                 "/translate Hello"
             )
@@ -209,27 +255,24 @@ def translate_command(update, context):
             return
 
 
-        # Join command arguments
-        text = " ".join(context.args).strip()
+        text = " ".join(
+            context.args
+        ).strip()
 
 
-        # Translate
         translated = translate_text(text)
 
 
-        # Success
         if translated:
 
             update.message.reply_text(
                 f"🔁 {translated}"
             )
 
-
-        # Failed
         else:
 
             update.message.reply_text(
-                "❌ অনুবাদ করা যায়নি।\n"
+                "❌ অনুবাদ ব্যর্থ হয়েছে।\n"
                 "কিছুক্ষণ পরে আবার চেষ্টা করুন।"
             )
 
@@ -243,7 +286,7 @@ def translate_command(update, context):
 
 
 # =========================
-# Telegram Handlers
+# Handlers
 # =========================
 
 dispatcher.add_handler(
@@ -306,23 +349,17 @@ def webhook():
 
 
 # =========================
-# Home / Status
+# Status
 # =========================
 
-@app.route(
-    "/",
-    methods=["GET"]
-)
+@app.route("/")
 def index():
 
-    return (
-        "BD Translate Bot is live!",
-        200
-    )
+    return "BD Translate Bot is live!", 200
 
 
 # =========================
-# Start Flask Server
+# Run
 # =========================
 
 if __name__ == "__main__":
@@ -334,14 +371,12 @@ if __name__ == "__main__":
         )
     )
 
-
     logger.info(
         "Starting Flask server on port %s...",
         PORT
     )
 
-
     app.run(
         host="0.0.0.0",
         port=PORT
-    )
+            )
