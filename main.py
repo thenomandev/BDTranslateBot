@@ -6,67 +6,182 @@ from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
 from googletrans import Translator
 
 # Logging setup
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-# টোকেন environment থেকে
+# Bot token
 TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN environment variable সেট থাকে নাই!")
 
-# Flask + Bot init
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable সেট করা নেই!")
+
+# Flask + Telegram Bot
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
-translator = Translator()
 
-# Dispatcher তৈরি
+# Use Google's direct translation endpoint
+translator = Translator(
+    service_urls=["translate.googleapis.com"]
+)
+
+# Dispatcher
 dispatcher = Dispatcher(bot, None, use_context=True)
 
-# ✅ সাধারণ মেসেজের জন্য অনুবাদ
+
+def translate_text(text):
+    """
+    English <-> Bangla translation
+    """
+
+    if not text or not text.strip():
+        return None
+
+    text = text.strip()
+
+    try:
+        # Detect language
+        detected = translator.detect(text)
+        lang = detected.lang.lower()
+
+        logger.info(
+            "Detected language: %s | Text: %s",
+            lang,
+            text[:100]
+        )
+
+        # English -> Bangla
+        if lang == "en":
+            dest_lang = "bn"
+
+        # Bangla -> English
+        elif lang == "bn":
+            dest_lang = "en"
+
+        # Other languages -> Bangla
+        else:
+            dest_lang = "bn"
+
+        result = translator.translate(
+            text,
+            dest=dest_lang
+        )
+
+        return result.text
+
+    except Exception as e:
+        logger.exception("Translation error")
+        return None
+
+
+# Normal message handler
 def handle_message(update, context):
-    text = update.message.text
-    lang = translator.detect(text).lang
-    dest_lang = 'bn' if lang == 'en' else 'en'
-    try:
-        translated = translator.translate(text, dest=dest_lang).text
-        update.message.reply_text(f" {translated}")
-    except Exception as e:
-        update.message.reply_text("❌ Translation failed.")
-        logger.error(f"Translation error: {e}")
 
-# ✅ /translate command এর জন্য handler
-def translate_command(update, context):
-    if not context.args:
-        update.message.reply_text("⚠️ দয়া করে /translate এর পরে কিছু লিখুন।\nউদাহরণ: `/translate Hello`", parse_mode="Markdown")
+    if not update.message or not update.message.text:
         return
-    text = ' '.join(context.args)
-    lang = translator.detect(text).lang
-    dest_lang = 'bn' if lang == 'en' else 'en'
-    try:
-        translated = translator.translate(text, dest=dest_lang).text
+
+    text = update.message.text
+
+    translated = translate_text(text)
+
+    if translated:
         update.message.reply_text(f"🔁 {translated}")
-    except Exception as e:
-        update.message.reply_text("❌ Translation failed.")
-        logger.error(f"Command translation error: {e}")
+    else:
+        update.message.reply_text(
+            "❌ অনুবাদ করা যায়নি। একটু পরে আবার চেষ্টা করুন।"
+        )
 
-# Handlers যুক্ত করা
-dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-dispatcher.add_handler(CommandHandler("translate", translate_command))
 
-# Webhook endpoint
+# /translate command
+def translate_command(update, context):
+
+    if not context.args:
+        update.message.reply_text(
+            "⚠️ দয়া করে /translate এর পরে কিছু লিখুন।\n\n"
+            "উদাহরণ:\n"
+            "/translate Hello"
+        )
+        return
+
+    text = " ".join(context.args)
+
+    translated = translate_text(text)
+
+    if translated:
+        update.message.reply_text(
+            f"🔁 {translated}"
+        )
+    else:
+        update.message.reply_text(
+            "❌ অনুবাদ করা যায়নি। একটু পরে আবার চেষ্টা করুন।"
+        )
+
+
+# Handlers
+dispatcher.add_handler(
+    MessageHandler(
+        Filters.text & ~Filters.command,
+        handle_message
+    )
+)
+
+dispatcher.add_handler(
+    CommandHandler(
+        "translate",
+        translate_command
+    )
+)
+
+
+# Webhook
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return "OK", 200
 
-# Status route
+    try:
+        data = request.get_json(force=True)
+
+        update = Update.de_json(
+            data,
+            bot
+        )
+
+        dispatcher.process_update(update)
+
+        return "OK", 200
+
+    except Exception as e:
+
+        logger.exception(
+            "Webhook error"
+        )
+
+        return "ERROR", 500
+
+
+# Status
 @app.route("/", methods=["GET"])
 def index():
     return "BD Translate Bot is live!", 200
 
-# Run server
+
+# Start Flask
 if __name__ == "__main__":
-    PORT = int(os.environ.get("PORT", 5000))
-    logger.info("Starting Flask server...")
-    app.run(host="0.0.0.0", port=PORT)
+
+    PORT = int(
+        os.environ.get(
+            "PORT",
+            5000
+        )
+    )
+
+    logger.info(
+        "Starting Flask server on port %s...",
+        PORT
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=PORT
+    )
