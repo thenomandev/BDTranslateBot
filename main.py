@@ -32,12 +32,30 @@ if not TOKEN:
 
 
 # =========================
-# Flask + Telegram
+# Render URL
+# =========================
+
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
+
+if not RENDER_URL:
+    logger.warning(
+        "RENDER_EXTERNAL_URL পাওয়া যায়নি। "
+        "Webhook automatic সেট করা যাবে না।"
+    )
+
+
+# =========================
+# Flask + Telegram Bot
 # =========================
 
 bot = Bot(token=TOKEN)
 
 app = Flask(__name__)
+
+
+# =========================
+# Dispatcher
+# =========================
 
 dispatcher = Dispatcher(
     bot,
@@ -59,7 +77,7 @@ def translate_text(text):
 
     try:
 
-        # Detect source language
+        # Detect language
         detect_url = (
             "https://translate.googleapis.com/"
             "translate_a/single?"
@@ -89,7 +107,6 @@ def translate_text(text):
             )
 
 
-        # Google response-এর detected language
         detected_lang = None
 
         if len(data) > 2:
@@ -108,15 +125,12 @@ def translate_text(text):
         if detected_lang == "bn":
             destination = "en"
 
-        # English -> Bangla
+        # Everything else -> Bangla
         else:
             destination = "bn"
 
 
-        # =========================
-        # Actual Translation
-        # =========================
-
+        # Translate
         translate_url = (
             "https://translate.googleapis.com/"
             "translate_a/single?"
@@ -146,7 +160,6 @@ def translate_text(text):
             )
 
 
-        # Translation result
         translated_parts = []
 
         if data and data[0]:
@@ -154,10 +167,7 @@ def translate_text(text):
             for item in data[0]:
 
                 if item and item[0]:
-
-                    translated_parts.append(
-                        item[0]
-                    )
+                    translated_parts.append(item[0])
 
 
         translated = "".join(
@@ -166,9 +176,7 @@ def translate_text(text):
 
 
         if not translated:
-            logger.error(
-                "Empty translation response"
-            )
+            logger.error("Empty translation response")
             return None
 
 
@@ -191,7 +199,7 @@ def translate_text(text):
 
 
 # =========================
-# Normal Message
+# Message Handler
 # =========================
 
 def handle_message(update, context):
@@ -208,6 +216,12 @@ def handle_message(update, context):
 
         if not text:
             return
+
+
+        logger.info(
+            "Received message: %s",
+            text[:100]
+        )
 
 
         translated = translate_text(text)
@@ -227,11 +241,10 @@ def handle_message(update, context):
             )
 
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "Message handler error: %s",
-            e
+            "Message handler error"
         )
 
 
@@ -260,6 +273,12 @@ def translate_command(update, context):
         ).strip()
 
 
+        logger.info(
+            "Translate command: %s",
+            text[:100]
+        )
+
+
         translated = translate_text(text)
 
 
@@ -277,11 +296,10 @@ def translate_command(update, context):
             )
 
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "Command translation error: %s",
-            e
+            "Command translation error"
         )
 
 
@@ -305,7 +323,7 @@ dispatcher.add_handler(
 
 
 # =========================
-# Webhook
+# Webhook Endpoint
 # =========================
 
 @app.route(
@@ -324,6 +342,11 @@ def webhook():
             return "No data", 400
 
 
+        logger.info(
+            "Telegram webhook request received"
+        )
+
+
         update = Update.de_json(
             data,
             bot
@@ -338,11 +361,10 @@ def webhook():
         return "OK", 200
 
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "Webhook error: %s",
-            e
+            "Webhook error"
         )
 
         return "ERROR", 500
@@ -359,7 +381,70 @@ def index():
 
 
 # =========================
-# Run
+# Set Webhook
+# =========================
+
+def setup_webhook():
+
+    try:
+
+        if not RENDER_URL:
+
+            logger.error(
+                "RENDER_EXTERNAL_URL পাওয়া যায়নি!"
+            )
+
+            return
+
+
+        webhook_url = (
+            RENDER_URL.rstrip("/")
+            + "/"
+            + TOKEN
+        )
+
+
+        logger.info(
+            "Setting Telegram webhook: %s",
+            RENDER_URL.rstrip("/") + "/<TOKEN>"
+        )
+
+
+        result = bot.set_webhook(
+            url=webhook_url
+        )
+
+
+        logger.info(
+            "Webhook setup result: %s",
+            result
+        )
+
+
+        info = bot.get_webhook_info()
+
+
+        logger.info(
+            "Webhook URL configured: %s",
+            info.url
+        )
+
+
+        logger.info(
+            "Pending updates: %s",
+            info.pending_update_count
+        )
+
+
+    except Exception:
+
+        logger.exception(
+            "Failed to setup Telegram webhook"
+        )
+
+
+# =========================
+# Start Server
 # =========================
 
 if __name__ == "__main__":
@@ -371,12 +456,18 @@ if __name__ == "__main__":
         )
     )
 
+
+    # Set webhook before starting Flask
+    setup_webhook()
+
+
     logger.info(
         "Starting Flask server on port %s...",
         PORT
     )
 
+
     app.run(
         host="0.0.0.0",
         port=PORT
-            )
+        )
